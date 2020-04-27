@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "mattpy"
+version = "0.1.0"
+description = "An assortment of Python utilities used in my research"
+authors = ["Matthew Peterson <matthew.se.peterson@gmail.com>"]
+license = "MIT"
+
+[tool.poetry.dependencies]
+python = "^3.7"
+matplotlib = "^3.2.1"
+numpy = "^1.18.3"
+
+[tool.poetry.dev-dependencies]
+flake8 = "^3.7.9"
+yapf = "^0.30.0"
+
+[build-system]
+requires = ["poetry>=0.12"]
+build-backend = "poetry.masonry.api"
