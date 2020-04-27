@@ -1,6 +1,9 @@
 # Ignore VS Code settings
 .vscode
 
+# Ignore poetry.lock
+poetry.lock
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
