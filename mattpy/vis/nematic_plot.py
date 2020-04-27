@@ -25,7 +25,6 @@ import matplotlib.cm as cm
 import matplotlib.colors as mcolors
 import matplotlib.collections as mcollections
 import matplotlib.lines as mlines
-import matplotlib.patches as patches
 import matplotlib.pyplot as plt
 
 __all__ = ["nematic_plot"]
@@ -55,6 +54,9 @@ def nematic_plot(x,
     *u*, *v* : 2d arrays
         x- and y-components of the vector field. Number of rows should match
         length of y, and the number of columns should match x.
+    *ax* : :class:`~matplotlib.axes.Axes`
+        The Axes object in which to put the plot. Defaults to the current
+        active axes.
     *density* : float or 2-tuple
         Controls the closeness of streamlines. When `density = 1`, the domain
         is divided into a 30x30 grid---*density* linearly scales this grid.
@@ -71,18 +73,13 @@ def nematic_plot(x,
     *norm* : :class:`~matplotlib.colors.Normalize`
         Normalize object used to scale luminance data to 0, 1. If None, stretch
         (min, max) to (0, 1). Only necessary when *color* is an array.
-    *arrowsize* : float
-        Factor scale arrow size.
-    *arrowstyle* : str
-        Arrow style specification.
-        See :class:`~matplotlib.patches.FancyArrowPatch`.
-    *minlength* : float
-        Minimum length of streamline in axes coordinates.
     *start_points*: Nx2 array
         Coordinates of starting points for the streamlines.
         In data coordinates, the same as the ``x`` and ``y`` arrays.
     *zorder* : int
         any number
+    *minlength* : float
+        Minimum length of streamline in axes coordinates.
     *maxlength* : float
         Maximum length of streamline in axes coordinates.
     *integration_direction* : ['forward', 'backward', 'both']
@@ -124,7 +121,6 @@ def nematic_plot(x,
         linewidth = matplotlib.rcParams['lines.linewidth']
 
     line_kw = {}
-    arrow_kw = dict(arrowstyle='-', mutation_scale=10)
 
     if integration_direction not in ['both', 'forward', 'backward']:
         errstr = ("Integration direction '%s' not recognised. "
@@ -144,7 +140,6 @@ def nematic_plot(x,
         color = np.ma.masked_invalid(color)
     else:
         line_kw['color'] = color
-        arrow_kw['color'] = color
 
     if isinstance(linewidth, np.ndarray):
         if linewidth.shape != grid.shape:
@@ -153,10 +148,8 @@ def nematic_plot(x,
         line_kw['linewidth'] = []
     else:
         line_kw['linewidth'] = linewidth
-        arrow_kw['linewidth'] = linewidth
 
     line_kw['zorder'] = zorder
-    arrow_kw['zorder'] = zorder
 
     # Sanity checks.
     if u.shape != grid.shape or v.shape != grid.shape:
@@ -207,7 +200,6 @@ def nematic_plot(x,
             cmap = cm.get_cmap(cmap)
 
     streamlines = []
-    arrows = []
     for t in trajectories:
         tgx = np.array(t[0])
         tgy = np.array(t[1])
@@ -219,28 +211,13 @@ def nematic_plot(x,
         points = np.transpose([tx, ty]).reshape(-1, 1, 2)
         streamlines.extend(np.hstack([points[:-1], points[1:]]))
 
-        # Add arrows half way along each trajectory.
-        s = np.cumsum(np.sqrt(np.diff(tx)**2 + np.diff(ty)**2))
-        n = np.searchsorted(s, s[-1] / 2.)
-        arrow_tail = (tx[n], ty[n])
-        arrow_head = (np.mean(tx[n:n + 2]), np.mean(ty[n:n + 2]))
-
         if isinstance(linewidth, np.ndarray):
             line_widths = interpgrid(linewidth, tgx, tgy)[:-1]
             line_kw['linewidth'].extend(line_widths)
-            arrow_kw['linewidth'] = line_widths[n]
 
         if use_multicolor_lines:
             color_values = interpgrid(color, tgx, tgy)[:-1]
             line_colors.append(color_values)
-            arrow_kw['color'] = cmap(norm(color_values[n]))
-
-        p = patches.FancyArrowPatch(arrow_tail,
-                                    arrow_head,
-                                    transform=transform,
-                                    **arrow_kw)
-        axes.add_patch(p)
-        arrows.append(p)
 
     lc = mcollections.LineCollection(streamlines,
                                      transform=transform,
@@ -254,15 +231,13 @@ def nematic_plot(x,
     axes.add_collection(lc)
     axes.autoscale_view()
 
-    ac = matplotlib.collections.PatchCollection(arrows)
-    stream_container = StreamplotSet(lc, ac)
+    stream_container = StreamplotSet(lc)
     return stream_container
 
 
 class StreamplotSet(object):
-    def __init__(self, lines, arrows, **kwargs):
+    def __init__(self, lines, **kwargs):
         self.lines = lines
-        self.arrows = arrows
 
 
 # Coordinate definitions
@@ -455,8 +430,8 @@ def get_integrator(u, v, dmap, minlength, maxlength, integration_direction):
         if ds_dt == 0:
             raise TerminateTrajectory()
         dt_ds = 1. / ds_dt
-        ui = interpgrid(u, xi, yi)
-        vi = interpgrid(v, xi, yi)
+        ui, vi = interpgrid_vec(u, v, xi, yi)
+        # vi = interpgrid_vec(v, xi, yi)
 
         return ui * dt_ds, vi * dt_ds
 
@@ -557,18 +532,14 @@ def _integrate_rk12(x0, y0, dmap, f, maxlength):
         xf_traj.append(xi)
         yf_traj.append(yi)
         try:
-            # NOTE: Modified by Matt Peterson, 2020-04-27
             k1x, k1y = force_parallel(f(xi, yi), tangent)
             k2x, k2y = force_parallel(f(xi + ds * k1x, yi + ds * k1y), tangent)
-            # -------------------------------------------
         except IndexError:
             # Out of the domain on one of the intermediate integration steps.
             # Take an Euler step to the boundary to improve neatness.
 
-            # NOTE: Modified by Matt Peterson, 2020-04-27
             ds, xf_traj, yf_traj = _euler_step(xf_traj, yf_traj, dmap, f,
                                                tangent)
-            # -------------------------------------------
             stotal += ds
             break
         except TerminateTrajectory:
@@ -645,10 +616,27 @@ def _euler_step(xf_traj, yf_traj, dmap, f, tangent):
 
 
 def force_parallel(u, v):
-    if (u[0] * v[0] + u[1] * v[1]) < 0:
+    if u[0] * v[0] + u[1] * v[1] < 0:
         return (-u[0], -u[1])
     else:
         return u
+
+    # u2 = u[0] * u[0] + u[1] * u[1]
+    # v2 = v[0] * v[0] + v[1] * v[1]
+
+    # if v2 == 0:
+    #     cos = 1
+    # elif u2 == 0:
+    #     raise TerminateTrajectory
+    # else:
+    #     cos = (u[0] * v[0] + u[1] * v[1]) / np.sqrt(u2 * v2)
+
+    # if cos > 0.1:
+    #     return u
+    # elif cos < -0.1:
+    #     return (-u[0], -u[1])
+    # else:
+    #     raise TerminateTrajectory
 
 
 def interpgrid(a, xi, yi):
@@ -691,6 +679,63 @@ def interpgrid(a, xi, yi):
             raise TerminateTrajectory
 
     return ai
+
+
+def interpgrid_vec(u, v, xi, yi):
+    """
+    Fast 2D, linear interpolation of nematic vector on an integer grid
+    """
+
+    Ny, Nx = np.shape(u)
+    if isinstance(xi, np.ndarray):
+        x = xi.astype(int)
+        y = yi.astype(int)
+        # Check that xn, yn don't exceed max index
+        xn = np.clip(x + 1, 0, Nx - 1)
+        yn = np.clip(y + 1, 0, Ny - 1)
+    else:
+        x = int(xi)
+        y = int(yi)
+        # conditional is faster than clipping for integers
+        if x == (Nx - 1):
+            xn = x
+        else:
+            xn = x + 1
+        if y == (Ny - 1):
+            yn = y
+        else:
+            yn = y + 1
+
+    xt = xi - x
+    yt = yi - y
+
+    u00 = u[y, x]
+    u01 = u[y, xn]
+    u10 = u[yn, x]
+    u11 = u[yn, xn]
+
+    v00 = v[y, x]
+    v01 = v[y, xn]
+    v10 = v[yn, x]
+    v11 = v[yn, xn]
+
+    u01, v01 = force_parallel((u01, v01), (u00, v00))
+    u10, v10 = force_parallel((u10, v10), (u00, v00))
+    u11, v11 = force_parallel((u11, v11), (u00, v00))
+
+    u0 = u00 * (1 - xt) + u01 * xt
+    u1 = u10 * (1 - xt) + u11 * xt
+    ui = u0 * (1 - yt) + u1 * yt
+
+    v0 = v00 * (1 - xt) + v01 * xt
+    v1 = v10 * (1 - xt) + v11 * xt
+    vi = v0 * (1 - yt) + v1 * yt
+
+    if not isinstance(xi, np.ndarray):
+        if np.ma.is_masked(ui) or np.ma.is_masked(vi):
+            raise TerminateTrajectory
+
+    return (ui, vi)
 
 
 def _gen_starting_points(shape):
